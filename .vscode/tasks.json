@@ -1,0 +1,23 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Rust: limpar imports + formatar",
+            "type": "shell",
+            "command": "cargo fix --allow-dirty --allow-staged --quiet; cargo fmt",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "silent",
+                "panel": "shared",
+                "clear": true,
+                "showReuseMessage": false
+            },
+            "runOptions": {
+                "instanceLimit": 1
+            }
+        }
+    ]
+}
