@@ -4,5 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+openh264 = "0.9.10"
 tokio = "1.54.1"
 xcap = "0.9.10"
