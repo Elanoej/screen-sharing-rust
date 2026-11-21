@@ -12,11 +12,6 @@ use openh264::{
 };
 use xcap::Frame;
 
-fn main() {
-    println!("Starting recording");
-    screen_record();
-}
-
 fn screen_record() {
     let monitor = monitors::get_main_monitor();
 
