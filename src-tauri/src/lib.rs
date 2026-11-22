@@ -2,7 +2,10 @@ mod commands;
 mod monitors;
 mod screen_record;
 
+use std::sync::Mutex;
+
 use commands::{available_monitors, start_share, stop_share};
+use screen_record::Recording;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -14,6 +17,7 @@ fn greet(name: &str) -> String {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .manage(Mutex::new(None::<Recording>))
         .invoke_handler(tauri::generate_handler![
             greet,
             available_monitors,

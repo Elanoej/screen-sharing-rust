@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 
+import { ScreenShareView } from "./ScreenShareView";
+
 type Monitor = { id: string; label: string };
 type Quality = "720p30" | "720p60" | "1080p60";
 
@@ -18,6 +20,9 @@ export default function ShareScreen() {
   const [monitorId, setMonitorId] = useState("");
   const [quality, setQuality] = useState<Quality>("720p60");
 
+  // null = não está transmitindo
+  const [activeMonitorId, setActiveMonitorId] = useState<number | null>(null);
+
   useEffect(() => {
     getAvailableMonitors()
       .then((list) => {
@@ -28,8 +33,8 @@ export default function ShareScreen() {
   }, []);
 
   function handleStart() {
-    // TODO: invoke("start_stream", { monitorId, quality })
-    console.log({ monitorId, quality });
+    if (!monitorId) return;
+    setActiveMonitorId(Number(monitorId));
   }
 
   return (
@@ -77,10 +82,28 @@ export default function ShareScreen() {
       <button
         type="button"
         onClick={handleStart}
-        className="mt-1.5 w-full rounded-lg bg-blue-600 px-3 py-2.5 font-semibold text-white transition-colors hover:bg-blue-700"
+        disabled={!monitorId}
+        className="mt-1.5 w-full rounded-lg bg-blue-600 px-3 py-2.5 font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-zinc-400"
       >
         ▶ Iniciar
       </button>
+
+      {activeMonitorId !== null && (
+        <div className="fixed inset-0 z-50 flex flex-col bg-black">
+          <ScreenShareView monitorId={activeMonitorId} />
+
+          <div className="absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-3 rounded-full bg-zinc-900/80 px-3 py-2 backdrop-blur">
+            <span className="text-xs text-zinc-300">Compartilhando…</span>
+            <button
+              type="button"
+              onClick={() => setActiveMonitorId(null)}
+              className="rounded-full bg-red-600 px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-red-700"
+            >
+              ■ Parar
+            </button>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

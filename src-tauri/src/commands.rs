@@ -17,7 +17,11 @@ pub fn start_share(
     state: tauri::State<Mutex<Option<Recording>>>,
 ) -> Result<(), String> {
     let rec = screen_record::start_recording(config, on_chunk)?;
-    *state.lock().unwrap() = Some(rec);
+    let previous = state.lock().unwrap().replace(rec);
+    if let Some(previous) = previous {
+        previous.stop()?;
+    }
+
     Ok(())
 }
 

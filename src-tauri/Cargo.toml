@@ -26,6 +26,13 @@ openh264 = "0.9.10"
 tokio = "1.54.1"
 xcap = "0.9.10"
 
+# Dependências otimizadas em dev: sem isso a conversão RGBA->YUV leva ~271 ms.
+[profile.dev.package."*"]
+opt-level = 3
+
+# Nosso crate otimizado em dev: cobre código genérico (ex.: imageops::resize).
+[profile.dev]
+opt-level = 3
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

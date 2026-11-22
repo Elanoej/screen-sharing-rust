@@ -1,5 +1,3 @@
-use std::fmt::format;
-
 use xcap::Monitor;
 
 #[derive(serde::Serialize)]
@@ -37,13 +35,4 @@ pub fn get_monitor_by_id(id: u32) -> Result<Monitor, String> {
         .into_iter()
         .find(|m| m.id().map(|mid| mid == id).unwrap_or(false))
         .ok_or_else(|| format!("Monitor com id {id} não encontrado"))
-}
-
-pub fn get_main_monitor() -> Monitor {
-    let monitors = Monitor::all().expect("Monitors not found");
-
-    return monitors
-        .into_iter()
-        .find(|m| m.is_primary().unwrap_or(false))
-        .expect("No primary monitor found");
 }
