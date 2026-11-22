@@ -1,3 +1,5 @@
+use std::fmt::format;
+
 use xcap::Monitor;
 
 #[derive(serde::Serialize)]
@@ -27,6 +29,14 @@ pub fn list_monitors() -> Result<Vec<MonitorInfo>, String> {
             })
         })
         .collect()
+}
+
+pub fn get_monitor_by_id(id: u32) -> Result<Monitor, String> {
+    Monitor::all()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|m| m.id().map(|mid| mid == id).unwrap_or(false))
+        .ok_or_else(|| format!("Monitor com id {id} não encontrado"))
 }
 
 pub fn get_main_monitor() -> Monitor {
