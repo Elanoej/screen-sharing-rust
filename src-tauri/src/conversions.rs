@@ -43,7 +43,9 @@ impl Converter {
         let (tw, th) = target;
         Self {
             resizer: Resizer::new(),
-            opts: ResizeOptions::new().resize_alg(ResizeAlg::Convolution(FilterType::Bilinear)),
+            opts: ResizeOptions::new()
+                .resize_alg(ResizeAlg::Convolution(FilterType::Bilinear))
+                .use_alpha(false),
             scaled: Image::new(tw, th, PixelType::U8x4),
             planes: YuvPlanarImageMut::alloc(tw, th, YuvChromaSubsampling::Yuv420),
             size: target,
