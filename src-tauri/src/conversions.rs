@@ -1,16 +1,19 @@
-use xcap::{
-    Frame,
-    image::{RgbaImage, imageops, imageops::FilterType},
+use std::time::{Duration, Instant};
+
+use fast_image_resize::{
+    FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer,
+    images::{Image, ImageRef},
+};
+use xcap::Frame;
+
+use openh264::formats::YUVSlices;
+use yuv::{
+    YuvChromaSubsampling, YuvConversionMode, YuvPlanarImageMut, YuvRange, YuvStandardMatrix,
+    rgba_to_yuv420,
 };
 
-use openh264::formats::{RgbaSliceU8, YUVBuffer};
-
-/// Altura máxima do stream. O monitor é 21:9, então a largura acompanha o
-/// aspecto original em vez de virar 1280x720 (que esticaria/distorceria).
 const TARGET_HEIGHT: u32 = 720;
 
-/// Resolução de encode, mantendo o aspecto e alinhando a largura a múltiplo de
-/// 16 (tamanho de macrobloco do H.264).
 pub fn encode_size(w: u32, h: u32) -> (u32, u32) {
     if h <= TARGET_HEIGHT {
         return (w, h);
@@ -22,25 +25,74 @@ pub fn encode_size(w: u32, h: u32) -> (u32, u32) {
     (tw.max(16), th)
 }
 
-/// Converte um frame RGBA para YUV, redimensionando apenas se a resolução de
-/// encode for diferente da original.
-pub fn frame_to_yuv(frame: Frame, target: (u32, u32)) -> YUVBuffer {
-    let (tw, th) = target;
+pub struct Timings {
+    pub resize: Duration,
+    pub yuv: Duration,
+}
 
-    if (tw, th) == (frame.width, frame.height) {
-        return YUVBuffer::from_rgba8_source(RgbaSliceU8::new(
-            &frame.raw,
-            (tw as usize, th as usize),
-        ));
+pub struct Converter {
+    resizer: Resizer,
+    opts: ResizeOptions,
+    scaled: Image<'static>,
+    planes: YuvPlanarImageMut<'static, u8>,
+    size: (u32, u32),
+}
+
+impl Converter {
+    pub fn new(target: (u32, u32)) -> Self {
+        let (tw, th) = target;
+        Self {
+            resizer: Resizer::new(),
+            opts: ResizeOptions::new().resize_alg(ResizeAlg::Convolution(FilterType::Bilinear)),
+            scaled: Image::new(tw, th, PixelType::U8x4),
+            planes: YuvPlanarImageMut::alloc(tw, th, YuvChromaSubsampling::Yuv420),
+            size: target,
+        }
     }
 
-    // RgbaImage::from_raw move o buffer, sem copiar os ~11 MB do frame
-    let img = RgbaImage::from_raw(frame.width, frame.height, frame.raw)
-        .expect("frame RGBA com tamanho inconsistente");
-    let resized = imageops::resize(&img, tw, th, FilterType::Triangle);
+    pub fn convert(&mut self, frame: &Frame) -> (YUVSlices<'_>, Timings) {
+        let (tw, th) = self.size;
+        let t = Instant::now();
 
-    YUVBuffer::from_rgba8_source(RgbaSliceU8::new(
-        resized.as_raw(),
-        (tw as usize, th as usize),
-    ))
+        let rgba: &[u8] = if (tw, th) == (frame.width, frame.height) {
+            &frame.raw
+        } else {
+            let src = ImageRef::new(frame.width, frame.height, &frame.raw, PixelType::U8x4)
+                .expect("frame RGBA com tamanho inconsistente");
+
+            self.resizer
+                .resize(&src, &mut self.scaled, &self.opts)
+                .expect("resize falhou");
+            self.scaled.buffer()
+        };
+        let resize = t.elapsed();
+
+        let t = Instant::now();
+        rgba_to_yuv420(
+            &mut self.planes,
+            rgba,
+            tw * 4,
+            YuvRange::Limited,
+            YuvStandardMatrix::Bt601,
+            YuvConversionMode::Balanced,
+        )
+        .expect("conversão YUV falhou");
+        let yuv = t.elapsed();
+
+        let slices = YUVSlices::new(
+            (
+                self.planes.y_plane.borrow(),
+                self.planes.u_plane.borrow(),
+                self.planes.v_plane.borrow(),
+            ),
+            (tw as usize, th as usize),
+            (
+                self.planes.y_stride as usize,
+                self.planes.u_stride as usize,
+                self.planes.v_stride as usize,
+            ),
+        );
+
+        (slices, Timings { resize, yuv })
+    }
 }

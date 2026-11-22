@@ -92,6 +92,7 @@ fn encode_loop(
     stop_flag: Arc<AtomicBool>,
 ) {
     let mut stats = StreamStats::default();
+    let mut converter: Option<((u32, u32), conversions::Converter)> = None;
 
     while !stop_flag.load(Ordering::Relaxed) {
         let frame = match rx.recv_timeout(Duration::from_millis(100)) {
@@ -102,12 +103,17 @@ fn encode_loop(
         let (frame, dropped) = take_latest(&rx, frame);
         stats.add_dropped(dropped);
 
-        let target = conversions::encode_size(frame.width, frame.height);
+        let src = (frame.width, frame.height);
+        let target = conversions::encode_size(src.0, src.1);
         let raw_len = target.0 as usize * target.1 as usize * 4;
 
-        let t0 = Instant::now();
-        let yuv = conversions::frame_to_yuv(frame, target);
-        let conv_time = t0.elapsed();
+        if converter.as_ref().map(|(s, _)| *s) != Some(src) {
+            converter = Some((src, conversions::Converter::new(target)));
+        }
+        let (_, conv) = converter.as_mut().unwrap();
+
+        let (yuv, timings) = conv.convert(&frame);
+        stats.add_conversion(timings.resize, timings.yuv);
 
         let t1 = Instant::now();
         let bitstream = match encoder.encode(&yuv) {
@@ -128,7 +134,7 @@ fn encode_loop(
             }
         };
 
-        stats.add_frame(raw_len, payload.len() - 1, conv_time, enc_time);
+        stats.add_frame(raw_len, payload.len() - 1, enc_time);
 
         if on_chunk.send(InvokeResponseBody::Raw(payload)).is_err() {
             // frontend sumiu (janela fechada ou componente desmontado)
@@ -174,7 +180,8 @@ struct StreamStats {
     frames: u32,
     raw_bytes: usize,
     enc_bytes: usize,
-    conv_time: Duration,
+    resize_time: Duration,
+    yuv_time: Duration,
     enc_time: Duration,
     skipped: u32,
     dropped: u32,
@@ -189,11 +196,15 @@ impl StreamStats {
         self.skipped += 1;
     }
 
-    fn add_frame(&mut self, raw_bytes: usize, enc_bytes: usize, conv: Duration, enc: Duration) {
+    fn add_conversion(&mut self, resize: Duration, yuv: Duration) {
+        self.resize_time += resize;
+        self.yuv_time += yuv;
+    }
+
+    fn add_frame(&mut self, raw_bytes: usize, enc_bytes: usize, enc: Duration) {
         self.frames += 1;
         self.raw_bytes += raw_bytes;
         self.enc_bytes += enc_bytes;
-        self.conv_time += conv;
         self.enc_time += enc;
     }
 
@@ -207,12 +218,13 @@ impl StreamStats {
 
         let secs = elapsed.as_secs_f64();
         let n = self.frames as f64;
-        let busy = (self.conv_time + self.enc_time).as_secs_f64() / secs * 100.0;
+        let busy = (self.resize_time + self.yuv_time + self.enc_time).as_secs_f64() / secs * 100.0;
         println!(
-            "fps: {:.1} | bitrate: {:.0} kbps | converter: {:.1} ms | encode: {:.1} ms | compressão: {:.0}:1 | ocupação: {:.0}% | skip: {} | drop: {}",
+            "fps: {:.1} | bitrate: {:.0} kbps | resize: {:.1} ms | yuv: {:.1} ms | encode: {:.1} ms | compressão: {:.0}:1 | ocupação: {:.0}% | skip: {} | drop: {}",
             n / secs,
             self.enc_bytes as f64 * 8.0 / secs / 1000.0,
-            self.conv_time.as_secs_f64() * 1000.0 / n,
+            self.resize_time.as_secs_f64() * 1000.0 / n,
+            self.yuv_time.as_secs_f64() * 1000.0 / n,
             self.enc_time.as_secs_f64() * 1000.0 / n,
             self.raw_bytes as f64 / self.enc_bytes as f64,
             busy,

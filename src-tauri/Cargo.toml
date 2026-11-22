@@ -25,6 +25,8 @@ serde_json = "1"
 openh264 = "0.9.10"
 tokio = "1.54.1"
 xcap = "0.9.10"
+fast_image_resize = "6.2.0"
+yuv = "0.8.20"
 
 # Dependências otimizadas em dev: sem isso a conversão RGBA->YUV leva ~271 ms.
 [profile.dev.package."*"]
