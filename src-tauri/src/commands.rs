@@ -3,7 +3,7 @@ use std::sync::Mutex;
 use tauri::ipc::{Channel, InvokeResponseBody};
 
 use crate::monitors::{self, MonitorInfo};
-use crate::screen_record::{self, Recording, ShareConfig};
+use crate::streaming::{self, Recording, ShareConfig};
 
 #[tauri::command]
 pub fn available_monitors() -> Result<Vec<MonitorInfo>, String> {
@@ -16,7 +16,7 @@ pub fn start_share(
     on_chunk: Channel<InvokeResponseBody>,
     state: tauri::State<Mutex<Option<Recording>>>,
 ) -> Result<(), String> {
-    let rec = screen_record::start_recording(config, on_chunk)?;
+    let rec = streaming::start_recording(config, on_chunk)?;
     let previous = state.lock().unwrap().replace(rec);
     if let Some(previous) = previous {
         previous.stop()?;

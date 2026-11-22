@@ -1,11 +1,12 @@
 mod commands;
+mod conversions;
 mod monitors;
-mod screen_record;
+mod streaming;
 
 use std::sync::Mutex;
 
 use commands::{available_monitors, start_share, stop_share};
-use screen_record::Recording;
+use streaming::Recording;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]

@@ -9,16 +9,18 @@ use std::{
 };
 
 use openh264::{
-    encoder::{Encoder, FrameType},
-    formats::{RgbaSliceU8, YUVBuffer},
+    OpenH264API,
+    encoder::{
+        BitRate, Complexity, Encoder, EncoderConfig, FrameRate, FrameType, IntraFramePeriod,
+        UsageType,
+    },
 };
 use tauri::ipc::{Channel, InvokeResponseBody};
 use xcap::{Frame, VideoRecorder};
 
-use crate::monitors;
+use crate::{conversions, monitors};
 
 #[derive(serde::Deserialize)]
-
 pub struct ShareConfig {
     monitor_id: u32,
 }
@@ -36,7 +38,22 @@ pub fn start_recording(
     let monitor = monitors::get_monitor_by_id(config.monitor_id)?;
     let (recorder, rx) = monitor.video_recorder().map_err(|e| e.to_string())?;
 
-    let encoder = Encoder::new().map_err(|e| e.to_string())?;
+    // perfil de tela compartilhada em tempo real: mais rápido, menos qualidade
+    let encoder_config = EncoderConfig::new()
+        .usage_type(UsageType::ScreenContentRealTime)
+        .complexity(Complexity::Low)
+        .max_frame_rate(FrameRate::from_hz(30.0))
+        .bitrate(BitRate::from_bps(2_500_000))
+        // I-frame a cada 60 frames (~2s): sem isso o decoder não tem como se
+        // recuperar de um frame perdido e a transmissão congela.
+        .intra_frame_period(IntraFramePeriod::from_num_frames(60))
+        // fatia o frame em NALs de até 4 KB; é o que permite o encoder usar
+        // várias threads (com slice único, num_threads não paraleliza nada).
+        .max_slice_len(4_000)
+        .num_threads(0);
+
+    let encoder = Encoder::with_api_config(OpenH264API::from_source(), encoder_config)
+        .map_err(|e| e.to_string())?;
 
     recorder.start().map_err(|e| e.to_string())?;
 
@@ -74,16 +91,28 @@ fn encode_loop(
     let mut enc_bytes: usize = 0;
     let mut conv_time = Duration::ZERO;
     let mut enc_time = Duration::ZERO;
+    let mut skipped: u32 = 0;
+    let mut dropped: u32 = 0;
 
     while !stop_flag.load(Ordering::Relaxed) {
-        let frame = match rx.recv_timeout(Duration::from_millis(100)) {
+        let mut frame = match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(frame) => frame,
             Err(RecvTimeoutError::Timeout) => continue, // volta a checar o stop_flag
             Err(RecvTimeoutError::Disconnected) => break,
         };
 
+        // o encode é mais lento que a captura: fica só com o frame mais recente.
+        // sem isso a fila cresce sem limite e a transmissão atrasa cada vez mais.
+        while let Ok(newer) = rx.try_recv() {
+            frame = newer;
+            dropped += 1;
+        }
+
+        let target = conversions::encode_size(frame.width, frame.height);
+        let raw_len = target.0 as usize * target.1 as usize * 4;
+
         let t0 = Instant::now();
-        let yuv = from_rgba_to_yuv(&frame);
+        let yuv = conversions::frame_to_yuv(frame, target);
         conv_time += t0.elapsed();
 
         let t1 = Instant::now();
@@ -91,6 +120,7 @@ fn encode_loop(
         enc_time += t1.elapsed();
 
         if matches!(bitstream.frame_type(), FrameType::Skip | FrameType::Invalid) {
+            skipped += 1;
             continue;
         }
 
@@ -101,10 +131,11 @@ fn encode_loop(
         bitstream.write_vec(&mut payload);
 
         frames += 1;
-        raw_bytes += frame.raw.len();
+        raw_bytes += raw_len;
         enc_bytes += payload.len() - 1;
 
         if on_chunk.send(InvokeResponseBody::Raw(payload)).is_err() {
+            // frontend sumiu (janela fechada ou componente desmontado)
             break;
         }
 
@@ -114,13 +145,15 @@ fn encode_loop(
             let n = frames as f64;
             let busy = (conv_time + enc_time).as_secs_f64() / secs * 100.0;
             println!(
-                "fps: {:.1} | bitrate: {:.0} kbps | converter: {:.1} ms | encode: {:.1} ms | compressão: {:.0}:1 | ocupação: {:.0}%",
+                "fps: {:.1} | bitrate: {:.0} kbps | converter: {:.1} ms | encode: {:.1} ms | compressão: {:.0}:1 | ocupação: {:.0}% | skip: {} | drop: {}",
                 n / secs,
                 enc_bytes as f64 * 8.0 / secs / 1000.0,
                 conv_time.as_secs_f64() * 1000.0 / n,
                 enc_time.as_secs_f64() * 1000.0 / n,
                 raw_bytes as f64 / enc_bytes as f64,
                 busy,
+                skipped,
+                dropped,
             );
             window_start = Instant::now();
             frames = 0;
@@ -128,14 +161,9 @@ fn encode_loop(
             enc_bytes = 0;
             conv_time = Duration::ZERO;
             enc_time = Duration::ZERO;
+            skipped = 0;
+            dropped = 0;
         }
     }
-
-    println!("Screen recorded");
 }
 
-fn from_rgba_to_yuv(frame: &Frame) -> YUVBuffer {
-    let dims = (frame.width as usize, frame.height as usize);
-    let rgba = RgbaSliceU8::new(&frame.raw, dims);
-    YUVBuffer::from_rgba8_source(rgba)
-}
