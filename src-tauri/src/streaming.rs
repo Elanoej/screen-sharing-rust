@@ -7,18 +7,14 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
-
-use openh264::{
-    OpenH264API,
-    encoder::{
-        BitRate, Complexity, EncodedBitStream, Encoder, EncoderConfig, FrameRate, FrameType,
-        IntraFramePeriod, UsageType,
-    },
-};
 use tauri::ipc::{Channel, InvokeResponseBody};
 use xcap::{Frame, VideoRecorder};
 
-use crate::{conversions, monitors};
+use crate::{
+    conversions,
+    encoder::{self, EncoderConfig, VideoEncoder},
+    monitors,
+};
 
 #[derive(serde::Deserialize)]
 pub struct ShareConfig {
@@ -38,7 +34,12 @@ pub fn start_recording(
     let monitor = monitors::get_monitor_by_id(config.monitor_id)?;
     let (recorder, rx) = monitor.video_recorder().map_err(|e| e.to_string())?;
 
-    let encoder = build_encoder()?;
+    let encoder = encoder::build_encoder(&EncoderConfig {
+        width: 0,
+        height: 0,
+        fps: 30,
+        bitrate: 2_500_000,
+    })?;
     recorder.start().map_err(|e| e.to_string())?;
 
     let stop_flag = Arc::new(AtomicBool::new(false));
@@ -63,34 +64,14 @@ impl Recording {
     }
 }
 
-/// Encoder com perfil de tela compartilhada em tempo real: mais rápido, menos
-/// qualidade.
-fn streaming_encoder_config() -> EncoderConfig {
-    EncoderConfig::new()
-        .usage_type(UsageType::ScreenContentRealTime)
-        .complexity(Complexity::Low)
-        .max_frame_rate(FrameRate::from_hz(30.0))
-        .bitrate(BitRate::from_bps(2_500_000))
-        // I-frame a cada 60 frames (~2s): sem isso o decoder não tem como se
-        // recuperar de um frame perdido e a transmissão congela.
-        .intra_frame_period(IntraFramePeriod::from_num_frames(60))
-        // fatia o frame em NALs de até 4 KB; é o que permite o encoder usar
-        // várias threads (com slice único, num_threads não paraleliza nada).
-        .max_slice_len(4_000)
-        .num_threads(0)
-}
-
-fn build_encoder() -> Result<Encoder, String> {
-    Encoder::with_api_config(OpenH264API::from_source(), streaming_encoder_config())
-        .map_err(|e| e.to_string())
-}
-
 fn encode_loop(
     rx: Receiver<Frame>,
-    mut encoder: Encoder,
+    mut encoder: Box<dyn VideoEncoder>,
     on_chunk: Channel<InvokeResponseBody>,
     stop_flag: Arc<AtomicBool>,
 ) {
+    println!("Encoder: {}", encoder.name());
+
     let mut stats = StreamStats::default();
     let mut converter: Option<((u32, u32), conversions::Converter)> = None;
 
@@ -116,25 +97,24 @@ fn encode_loop(
         stats.add_conversion(timings.resize, timings.yuv);
 
         let t1 = Instant::now();
-        let bitstream = match encoder.encode(&yuv) {
-            Ok(bitstream) => bitstream,
+
+        let chunk = match encoder.encode(&yuv) {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => {
+                stats.add_skipped();
+                continue;
+            }
             Err(e) => {
-                // não derruba o processo: para o stream e reporta o motivo
                 eprintln!("falha no encode, encerrando stream: {e}");
                 break;
             }
         };
         let enc_time = t1.elapsed();
+        stats.add_frame(raw_len, chunk.data.len(), enc_time);
 
-        let payload = match nal_payload(&bitstream) {
-            Some(payload) => payload,
-            None => {
-                stats.add_skipped();
-                continue;
-            }
-        };
-
-        stats.add_frame(raw_len, payload.len() - 1, enc_time);
+        let mut payload = Vec::with_capacity(chunk.data.len() + 1);
+        payload.push(chunk.is_key as u8);
+        payload.extend_from_slice(&chunk.data);
 
         if on_chunk.send(InvokeResponseBody::Raw(payload)).is_err() {
             // frontend sumiu (janela fechada ou componente desmontado)
@@ -143,22 +123,6 @@ fn encode_loop(
 
         stats.report_if_due();
     }
-}
-
-/// Protocolo do chunk enviado ao frontend:
-/// byte 0 = 1 se keyframe (IDR/I), 0 caso contrário; resto = NALs H.264.
-/// Retorna `None` quando o encoder não gerou nada aproveitável (Skip/Invalid).
-fn nal_payload(bitstream: &EncodedBitStream<'_>) -> Option<Vec<u8>> {
-    if matches!(bitstream.frame_type(), FrameType::Skip | FrameType::Invalid) {
-        return None;
-    }
-
-    let is_key = matches!(bitstream.frame_type(), FrameType::IDR | FrameType::I);
-
-    let mut payload = Vec::new();
-    payload.push(is_key as u8);
-    bitstream.write_vec(&mut payload);
-    Some(payload)
 }
 
 /// O encode é mais lento que a captura: fica só com o frame mais recente.

@@ -6,7 +6,7 @@ use fast_image_resize::{
 };
 use xcap::Frame;
 
-use openh264::formats::YUVSlices;
+use crate::encoder::YuvFrame;
 use yuv::{
     YuvChromaSubsampling, YuvConversionMode, YuvPlanarImageMut, YuvRange, YuvStandardMatrix,
     rgba_to_yuv420,
@@ -52,7 +52,7 @@ impl Converter {
         }
     }
 
-    pub fn convert(&mut self, frame: &Frame) -> (YUVSlices<'_>, Timings) {
+    pub fn convert(&mut self, frame: &Frame) -> (YuvFrame<'_>, Timings) {
         let (tw, th) = self.size;
         let t = Instant::now();
 
@@ -81,20 +81,17 @@ impl Converter {
         .expect("conversão YUV falhou");
         let yuv = t.elapsed();
 
-        let slices = YUVSlices::new(
-            (
-                self.planes.y_plane.borrow(),
-                self.planes.u_plane.borrow(),
-                self.planes.v_plane.borrow(),
-            ),
-            (tw as usize, th as usize),
-            (
-                self.planes.y_stride as usize,
-                self.planes.u_stride as usize,
-                self.planes.v_stride as usize,
-            ),
-        );
+        let yuv_frame = YuvFrame {
+            y: self.planes.y_plane.borrow(),
+            u: self.planes.u_plane.borrow(),
+            v: self.planes.v_plane.borrow(),
+            y_stride: self.planes.y_stride as usize,
+            u_stride: self.planes.u_stride as usize,
+            v_stride: self.planes.v_stride as usize,
+            width: tw,
+            height: th,
+        };
 
-        (slices, Timings { resize, yuv })
+        (yuv_frame, Timings { resize, yuv })
     }
 }

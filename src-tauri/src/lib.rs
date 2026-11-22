@@ -2,6 +2,7 @@ mod commands;
 mod conversions;
 mod monitors;
 mod streaming;
+mod encoder;
 
 use std::sync::Mutex;
 
