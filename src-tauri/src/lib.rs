@@ -1,8 +1,9 @@
+mod bitstream;
 mod commands;
 mod conversions;
+mod encoder;
 mod monitors;
 mod streaming;
-mod encoder;
 
 use std::sync::Mutex;
 
