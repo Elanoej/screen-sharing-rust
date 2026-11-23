@@ -14,17 +14,13 @@ use crate::{
     bitstream, conversions,
     encoder::{self, EncoderConfig, VideoEncoder},
     monitors,
+    packager::{Packager, Packet},
 };
 
 #[derive(serde::Deserialize)]
 pub struct ShareConfig {
     monitor_id: u32,
 }
-
-/// Primeiro byte de cada mensagem do canal.
-const KIND_DELTA: u8 = 0;
-const KIND_KEY: u8 = 1;
-const KIND_CONFIG: u8 = 2;
 
 pub struct Recording {
     recorder: VideoRecorder,
@@ -79,7 +75,7 @@ fn encode_loop(
 
     let mut stats = StreamStats::default();
     let mut converter: Option<((u32, u32), conversions::Converter)> = None;
-    let mut last_config: Option<Vec<u8>> = None;
+    let mut packager = Packager::new();
 
     while !stop_flag.load(Ordering::Relaxed) {
         let frame = match rx.recv_timeout(Duration::from_millis(100)) {
@@ -118,41 +114,29 @@ fn encode_loop(
         let enc_time = t1.elapsed();
         stats.add_frame(raw_len, chunk.data.len(), enc_time);
 
-        // O WebCodecs do WebKitGTK (GStreamer) exige AVCC + avcC em `description`;
-        // Annex-B puro não negocia e o decoder nunca produz frames.
         let au = bitstream::parse_annexb(&chunk.data);
-
-        if chunk.is_key {
-            if let Some(config) = bitstream::avcc_config(&au) {
-                if last_config.as_deref() != Some(config.as_slice()) {
-                    let mut payload = Vec::with_capacity(config.len() + 1);
-                    payload.push(KIND_CONFIG);
-                    payload.extend_from_slice(&config);
-                    if on_chunk.send(InvokeResponseBody::Raw(payload)).is_err() {
-                        break;
-                    }
-                    last_config = Some(config);
-                }
-            }
-        }
-
-        let avcc = bitstream::to_avcc(&au);
-        if avcc.is_empty() {
+        let packets = packager.push(&au, chunk.is_key);
+        if packets.is_empty() {
             eprintln!("frame sem NALs Annex-B, descartado");
             continue;
         }
 
-        let mut payload = Vec::with_capacity(avcc.len() + 1);
-        payload.push(if chunk.is_key { KIND_KEY } else { KIND_DELTA });
-        payload.extend_from_slice(&avcc);
-
-        if on_chunk.send(InvokeResponseBody::Raw(payload)).is_err() {
+        if !send_packets(packets, &on_chunk) {
             // frontend sumiu (janela fechada ou componente desmontado)
             break;
         }
 
         stats.report_if_due();
     }
+}
+
+/// Entrega os pacotes ao frontend. `false` quando o canal fechou.
+fn send_packets(packets: Vec<Packet>, on_chunk: &Channel<InvokeResponseBody>) -> bool {
+    packets.into_iter().all(|packet| {
+        on_chunk
+            .send(InvokeResponseBody::Raw(packet.into_payload()))
+            .is_ok()
+    })
 }
 
 /// O encode é mais lento que a captura: fica só com o frame mais recente.
