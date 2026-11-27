@@ -41,14 +41,18 @@ fn open(name: &str, (w, h): (u32, u32), fps: u32, bitrate: u32) -> Result<Opened
     v.set_gop(60);
 
     let mut opts = Dictionary::new();
-    if name == "h264_nvenc" {
-        opts.set("preset", "p1"); // o mais rápido
-        opts.set("tune", "ll"); // baixa latência
-        opts.set("rc", "cbr");
-        opts.set("zerolatency", "1");
-        opts.set("forced-idr", "1"); // keyframe forçado vira IDR de verdade
-        opts.set("profile", "baseline"); // casa com o avc1.42... do frontend
-    };
+
+    match name {
+        "h264_nvenc" => {
+            opts.set("preset", "p1"); // o mais rápido
+            opts.set("tune", "ll"); // baixa latência
+            opts.set("rc", "cbr");
+            opts.set("zerolatency", "1");
+            opts.set("forced-idr", "1"); // keyframe forçado vira IDR de verdade
+            opts.set("profile", "baseline"); // casa com o avc1.42... do frontend
+        }
+        _ => {}
+    }
 
     // É AQUI que falha sem driver / sem GPU compatível
     let enc = v
